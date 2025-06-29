@@ -1,20 +1,30 @@
 package in.sample.llm.aiservice;
 
 
+import static org.springframework.beans.factory.config.ConfigurableBeanFactory.SCOPE_PROTOTYPE;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
+
 import dev.langchain4j.http.client.jdk.JdkHttpClient;
 import dev.langchain4j.memory.ChatMemory;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.input.PromptTemplate;
 import dev.langchain4j.model.ollama.OllamaChatModel;
+import dev.langchain4j.model.ollama.OllamaEmbeddingModel;
 import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
+import dev.langchain4j.rag.DefaultRetrievalAugmentor;
+import dev.langchain4j.rag.RetrievalAugmentor;
+import dev.langchain4j.rag.content.injector.DefaultContentInjector;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import in.sample.llm.lowlevel.ChatModelController;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Scope;
-
-import static org.springframework.beans.factory.config.ConfigurableBeanFactory.SCOPE_PROTOTYPE;
 
 @Configuration
 public class AssistantConfiguration {
@@ -39,6 +49,21 @@ public class AssistantConfiguration {
         return new MyChatModelListener();
     }
 
+    /**
+     * Embedding model for RAG functionality
+     */
+    @Bean
+    public EmbeddingModel embeddingModel() {
+        return OllamaEmbeddingModel.builder()
+                .baseUrl("http://localhost:11434")
+                .modelName("nomic-embed-text")  // Good embedding model for Ollama
+                .httpClientBuilder(JdkHttpClient.builder())
+                .build();
+    }
+    @Bean
+    public EmbeddingStore embeddingStore () {
+        return  new InMemoryEmbeddingStore<>();
+    }
 
     @Bean
     public OllamaChatModel ollamaChatModel() {
@@ -56,6 +81,27 @@ public class AssistantConfiguration {
                 .modelName("gemma3:1b")
                 .httpClientBuilder(JdkHttpClient.builder())
                 .build();
+    }
+
+    @Bean
+    public ContentRetriever  contentRetriever(){
+        return  EmbeddingStoreContentRetriever.builder()
+                .embeddingStore(embeddingStore())
+                .embeddingModel(embeddingModel())
+                .maxResults(5)
+                .minScore(0.75)
+                .build();
+    }
+
+    @Bean
+    public RetrievalAugmentor retrievalAugmentor() {
+        return DefaultRetrievalAugmentor.builder()
+                .contentRetriever(contentRetriever())
+                .contentInjector(DefaultContentInjector.builder()
+                        .promptTemplate(PromptTemplate.from("{{userMessage}}\n{{contents}}"))
+                        .build())
+                .build();
+
     }
 
 }
