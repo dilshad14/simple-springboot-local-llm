@@ -6,6 +6,8 @@ import java.util.List;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
@@ -102,17 +104,15 @@ public class DocumentInjecterController {
     }
 
     private String readPdfContent(Resource resource) throws IOException {
-        // For now, we'll read as text. In production, you should use a proper PDF reader
-        // like Apache PDFBox or iText
-        try {
-            logger.debug("Reading content from file: {}", resource.getFilename());
-            byte[] bytes = resource.getInputStream().readAllBytes();
-            String content = new String(bytes);
-            logger.debug("Successfully read {} bytes from file: {}", bytes.length, resource.getFilename());
+        // Use PDFBox to extract text from PDF
+        try (PDDocument document = PDDocument.load(resource.getInputStream())) {
+            PDFTextStripper pdfStripper = new PDFTextStripper();
+            String content = pdfStripper.getText(document);
+            logger.debug("Successfully extracted text from file: {} ({} characters)", resource.getFilename(), content.length());
             return content;
         } catch (IOException e) {
-            logger.error("Failed to read file: {}", resource.getFilename(), e);
-            throw new IOException("Failed to read file: " + resource.getFilename(), e);
+            logger.error("Failed to extract text from file: {}", resource.getFilename(), e);
+            throw new IOException("Failed to extract text from file: " + resource.getFilename(), e);
         }
     }
 
