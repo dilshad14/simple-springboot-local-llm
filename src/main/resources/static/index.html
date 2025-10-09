@@ -73,6 +73,38 @@
             background-color: #e9ecef;
             color: black;
         }
+        /* Basic markdown formatting inside assistant messages */
+        .assistant-message h1, .assistant-message h2, .assistant-message h3 {
+            margin: 10px 0 6px;
+        }
+        .assistant-message p {
+            margin: 6px 0;
+        }
+        .assistant-message pre {
+            background: #1e1e1e;
+            color: #e6e6e6;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        .assistant-message code {
+            background: #f1f3f5;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .assistant-message blockquote {
+            margin: 6px 0;
+            padding-left: 12px;
+            border-left: 4px solid #ced4da;
+            color: #495057;
+        }
+        .assistant-message ul, .assistant-message ol {
+            padding-left: 24px;
+            margin: 8px 0;
+        }
+        .assistant-message li {
+            margin: 4px 0;
+        }
         .input-container {
             display: flex;
             gap: 10px;
@@ -140,6 +172,11 @@
         </div>
     </div>
 
+    <!-- Markdown parser and syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
     <script>
         const chatMessages = document.getElementById('chatMessages');
         const messageInput = document.getElementById('messageInput');
@@ -178,12 +215,48 @@
             }
         }
 
-        function addMessage(message, isUser) {
+        function addMessage(message, isUser, isHtml = false) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
-            messageDiv.textContent = message;
+            if (isHtml) {
+                messageDiv.innerHTML = message;
+            } else {
+                messageDiv.textContent = message;
+            }
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
+            return messageDiv;
+        }
+
+        // Configure marked for better list/paragraph handling
+        if (window.marked) {
+            marked.setOptions({
+                gfm: true,
+                breaks: true,
+                smartLists: true,
+                mangle: false,
+                headerIds: false
+            });
+        }
+
+        function normalizeMarkdown(text) {
+            if (!text) return text;
+            // Ensure bullets start on new lines when backend returns inline bullets
+            let normalized = text
+                .replace(/\s\*\s/g, '\n* ') // add newline before inline bullets
+                .replace(/\s-\s/g, '\n- ');  // add newline before inline dashes
+            // Ensure there is a blank line before headings/Answer labels for separation
+            normalized = normalized.replace(/(\S)(\n)?(\*\*Answer:\*\*)/gi, '$1\n\n$3');
+            return normalized;
+        }
+
+        function renderMarkdownInto(container, markdownText) {
+            const text = normalizeMarkdown(markdownText);
+            if (window.marked) {
+                container.innerHTML = marked.parse(text);
+            } else {
+                container.textContent = text;
+            }
         }
 
         async function sendMessage() {
@@ -202,13 +275,45 @@
 
             try {
                 const response = await fetch(`${endpoint}?message=${encodeURIComponent(message)}`);
-                const data = await response.text();
-                
-                // Hide loading indicator
-                loading.style.display = 'none';
-                
-                // Add assistant response to chat
-                addMessage(data, false);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+                // Create a placeholder assistant message to stream into
+                const assistantDiv = addMessage('', false, true);
+
+                if (!response.body || !response.body.getReader) {
+                    const fallbackText = await response.text();
+                    renderMarkdownInto(assistantDiv, fallbackText);
+                    loading.style.display = 'none';
+                    // Highlight code blocks after full render
+                    if (window.hljs) {
+                        assistantDiv.querySelectorAll('pre code').forEach(block => window.hljs.highlightElement(block));
+                    }
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = '';
+
+                async function readChunk() {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        loading.style.display = 'none';
+                        // Final render and highlight
+                        renderMarkdownInto(assistantDiv, fullText);
+                        if (window.hljs) {
+                            assistantDiv.querySelectorAll('pre code').forEach(block => window.hljs.highlightElement(block));
+                        }
+                        return;
+                    }
+                    const chunk = decoder.decode(value, { stream: true });
+                    fullText += chunk;
+                    renderMarkdownInto(assistantDiv, fullText);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                    return readChunk();
+                }
+
+                await readChunk();
             } catch (error) {
                 loading.style.display = 'none';
                 addMessage('Sorry, there was an error processing your request.', false);
