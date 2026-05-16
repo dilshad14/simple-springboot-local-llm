@@ -36,6 +36,9 @@ public class DocumentInjecterController {
     @Autowired
     private EmbeddingStore<TextSegment> embeddingStore;
 
+    @Autowired
+    private DocumentMetadataExtractor metadataExtractor;
+
     @PostMapping("/inject-rag")
     public String injectDocuments() {
         logger.info("Starting document injection process");
@@ -67,9 +70,18 @@ public class DocumentInjecterController {
                     
                     logger.debug("File {} content length: {} characters", resource.getFilename(), content.length());
                     
-                    // Create document with metadata
+                    // Extract metadata using LLM
+                    DocumentMetadataExtractor.DocumentMetadata extractedMetadata = 
+                        metadataExtractor.extractMetadata(content, resource.getFilename());
+                    
+                    logger.info("Extracted metadata for {}: {}", resource.getFilename(), extractedMetadata);
+                    
+                    // Create document with enhanced metadata
                     Metadata metadata = Metadata.from("filename", resource.getFilename());
                     metadata.put("date", LocalDateTime.now().toString());
+                    metadata.put("chapter_name", extractedMetadata.getChapterName());
+                    metadata.put("abstract", extractedMetadata.getAbstract());
+                    metadata.put("search_tags", extractedMetadata.getSearchTags());
                     Document document = Document.from(content, metadata);
                     
                     // Split document into segments
