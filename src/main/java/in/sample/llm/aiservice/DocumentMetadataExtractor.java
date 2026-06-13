@@ -2,26 +2,26 @@ package in.sample.llm.aiservice;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.stereotype.Service;
-
-import dev.langchain4j.model.chat.ChatModel;
 
 @Service
 public class DocumentMetadataExtractor {
 
     private static final Logger logger = LogManager.getLogger(DocumentMetadataExtractor.class);
 
-    @Autowired
-    private ChatModel chatModel;
+    private final ChatModel chatModel;
+
+    public DocumentMetadataExtractor(ChatModel chatModel) {
+        this.chatModel = chatModel;
+    }
 
     public DocumentMetadata extractMetadata(String content, String filename) {
         logger.info("Extracting metadata for document: {}", filename);
-        
+
         try {
-            // Truncate content if too long to avoid token limits
             String truncatedContent = truncateContent(content, 4000);
-            
+
             String prompt = String.format("""
                 Analyze the following document content and extract metadata in JSON format.
                 
@@ -41,11 +41,11 @@ public class DocumentMetadataExtractor {
                 }
                 """, filename, truncatedContent);
 
-            String response = chatModel.chat(prompt);
+            String response = chatModel.call(prompt);
             logger.debug("LLM response for metadata extraction: {}", response);
-            
+
             return parseMetadataResponse(response, filename);
-            
+
         } catch (Exception e) {
             logger.error("Error extracting metadata for document {}: {}", filename, e.getMessage(), e);
             return createFallbackMetadata(filename);
@@ -54,10 +54,8 @@ public class DocumentMetadataExtractor {
 
     private DocumentMetadata parseMetadataResponse(String response, String filename) {
         try {
-            // Clean the response to extract JSON
             String jsonResponse = response.trim();
-            
-            // Remove any markdown formatting if present
+
             if (jsonResponse.startsWith("```json")) {
                 jsonResponse = jsonResponse.substring(7);
             }
@@ -65,18 +63,17 @@ public class DocumentMetadataExtractor {
                 jsonResponse = jsonResponse.substring(0, jsonResponse.length() - 3);
             }
             jsonResponse = jsonResponse.trim();
-            
-            // Simple JSON parsing (you might want to use a proper JSON library)
+
             String chapterName = extractJsonValue(jsonResponse, "chapter_name");
             String abstractText = extractJsonValue(jsonResponse, "abstract");
             String searchTags = extractJsonValue(jsonResponse, "search_tags");
-            
+
             return new DocumentMetadata(
-                chapterName != null ? chapterName : "Unknown Chapter",
-                abstractText != null ? abstractText : "No abstract available",
-                searchTags != null ? searchTags : "document, content"
+                    chapterName != null ? chapterName : "Unknown Chapter",
+                    abstractText != null ? abstractText : "No abstract available",
+                    searchTags != null ? searchTags : "document, content"
             );
-            
+
         } catch (Exception e) {
             logger.warn("Failed to parse metadata response for {}: {}", filename, e.getMessage());
             return createFallbackMetadata(filename);
@@ -100,9 +97,9 @@ public class DocumentMetadataExtractor {
     private DocumentMetadata createFallbackMetadata(String filename) {
         String baseName = filename.replaceAll("\\.pdf$", "").replaceAll("[-_]", " ");
         return new DocumentMetadata(
-            baseName,
-            "Document content extracted from " + filename,
-            "document, " + baseName.toLowerCase()
+                baseName,
+                "Document content extracted from " + filename,
+                "document, " + baseName.toLowerCase()
         );
     }
 
@@ -138,8 +135,9 @@ public class DocumentMetadataExtractor {
 
         @Override
         public String toString() {
-            return String.format("DocumentMetadata{chapterName='%s', abstract='%s', searchTags='%s'}", 
-                               chapterName, abstractText, searchTags);
+            return String.format("DocumentMetadata{chapterName='%s', abstract='%s', searchTags='%s'}",
+                    chapterName, abstractText, searchTags);
         }
     }
+
 }

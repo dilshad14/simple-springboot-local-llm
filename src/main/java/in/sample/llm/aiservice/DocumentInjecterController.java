@@ -2,27 +2,22 @@ package in.sample.llm.aiservice;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import dev.langchain4j.data.document.Document;
-import dev.langchain4j.data.document.DocumentSplitter;
-import dev.langchain4j.data.document.Metadata;
-import dev.langchain4j.data.document.splitter.DocumentSplitters;
-import dev.langchain4j.data.embedding.Embedding;
-import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.EmbeddingStore;
 
 @RestController
 @RequestMapping("/api")
@@ -30,20 +25,18 @@ public class DocumentInjecterController {
 
     private static final Logger logger = LogManager.getLogger(DocumentInjecterController.class);
 
-    @Autowired
-    private EmbeddingModel embeddingModel;
+    private final VectorStore vectorStore;
+    private final DocumentMetadataExtractor metadataExtractor;
 
-    @Autowired
-    private EmbeddingStore<TextSegment> embeddingStore;
-
-    @Autowired
-    private DocumentMetadataExtractor metadataExtractor;
+    public DocumentInjecterController(VectorStore vectorStore, DocumentMetadataExtractor metadataExtractor) {
+        this.vectorStore = vectorStore;
+        this.metadataExtractor = metadataExtractor;
+    }
 
     @PostMapping("/inject-rag")
     public String injectDocuments() {
         logger.info("Starting document injection process");
         try {
-            // Get all PDF files from the classpath
             PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
             Resource[] pdfResources = resolver.getResources("classpath:rag-docs/*.pdf");
 
@@ -54,60 +47,62 @@ public class DocumentInjecterController {
 
             logger.info("Found {} PDF files to process", pdfResources.length);
             int totalSegments = 0;
-            DocumentSplitter documentSplitter = DocumentSplitters.recursive(300, 50);
+            TokenTextSplitter documentSplitter = TokenTextSplitter.builder()
+                    .withChunkSize(100)
+                    .withMinChunkSizeChars(50)
+                    .withMinChunkLengthToEmbed(5)
+                    .withMaxNumChunks(10_000)
+                    .withKeepSeparator(true)
+                    .build();
 
             for (Resource resource : pdfResources) {
                 try {
                     logger.debug("Processing file: {}", resource.getFilename());
-                    
-                    // Read PDF content
+
                     String content = readPdfContent(resource);
-                    
+
                     if (content == null || content.trim().isEmpty()) {
                         logger.warn("Skipping empty file: {}", resource.getFilename());
-                        continue; // Skip empty files
+                        continue;
                     }
-                    
+
                     logger.debug("File {} content length: {} characters", resource.getFilename(), content.length());
-                    
-                    // Extract metadata using LLM
-                    DocumentMetadataExtractor.DocumentMetadata extractedMetadata = 
-                        metadataExtractor.extractMetadata(content, resource.getFilename());
-                    
+
+                    DocumentMetadataExtractor.DocumentMetadata extractedMetadata =
+                            metadataExtractor.extractMetadata(content, resource.getFilename());
+
                     logger.info("Extracted metadata for {}: {}", resource.getFilename(), extractedMetadata);
-                    
-                    // Create document with enhanced metadata
-                    Metadata metadata = Metadata.from("filename", resource.getFilename());
+
+                    Map<String, Object> metadata = new HashMap<>();
+                    metadata.put("filename", resource.getFilename());
                     metadata.put("date", LocalDateTime.now().toString());
                     metadata.put("chapter_name", extractedMetadata.getChapterName());
                     metadata.put("abstract", extractedMetadata.getAbstract());
                     metadata.put("search_tags", extractedMetadata.getSearchTags());
-                    Document document = Document.from(content, metadata);
-                    
-                    // Split document into segments
-                    List<TextSegment> segments = documentSplitter.split(document);
+
+                    Document document = Document.builder()
+                            .text(content)
+                            .metadata(metadata)
+                            .build();
+
+                    List<Document> segments = documentSplitter.apply(List.of(document));
                     logger.debug("File {} split into {} segments", resource.getFilename(), segments.size());
-                    
-                    // Create embeddings and store them
-                    for (TextSegment segment : segments) {
-                        Embedding embedding = embeddingModel.embed(segment).content();
-                        embeddingStore.add(embedding, segment);
-                        totalSegments++;
-                    }
-                    
+
+                    vectorStore.add(segments);
+                    totalSegments += segments.size();
+
                     logger.info("Successfully processed file: {} with {} segments", resource.getFilename(), segments.size());
-                    
+
                 } catch (Exception e) {
-                    // Log error but continue with other files
                     logger.error("Error processing file {}: {}", resource.getFilename(), e.getMessage(), e);
                 }
             }
 
-            logger.info("Document injection completed. Processed {} files and created {} segments", 
-                       pdfResources.length, totalSegments);
-            
-            return String.format("Successfully processed %d PDF files and created %d segments", 
-                               pdfResources.length, totalSegments);
+            logger.info("Document injection completed. Processed {} files and created {} segments",
+                    pdfResources.length, totalSegments);
+
+            return String.format("Successfully processed %d PDF files and created %d segments",
+                    pdfResources.length, totalSegments);
 
         } catch (Exception e) {
             logger.error("Error during document injection process: {}", e.getMessage(), e);
@@ -116,7 +111,6 @@ public class DocumentInjecterController {
     }
 
     private String readPdfContent(Resource resource) throws IOException {
-        // Use PDFBox to extract text from PDF
         try (PDDocument document = PDDocument.load(resource.getInputStream())) {
             PDFTextStripper pdfStripper = new PDFTextStripper();
             String content = pdfStripper.getText(document);
@@ -128,9 +122,4 @@ public class DocumentInjecterController {
         }
     }
 
-    // Getter for the embedding store to be used by other services
-    public EmbeddingStore<TextSegment> getEmbeddingStore() {
-        logger.debug("Retrieving embedding store");
-        return embeddingStore;
-    }
 }
